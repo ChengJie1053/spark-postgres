@@ -31,7 +31,7 @@ import java.io._
 import java.util
 import java.nio.charset.StandardCharsets
 import java.sql.{Connection, Date, PreparedStatement, SQLException, Timestamp}
-import java.time.LocalDate
+import java.text.SimpleDateFormat
 import java.util.UUID
 import java.util.concurrent.{TimeUnit, TimeoutException}
 import scala.concurrent.Promise
@@ -253,8 +253,10 @@ object GreenplumUtils extends Logging {
     val in = new BufferedInputStream(new FileInputStream(dataFile))
     val conn = JdbcUtils.createConnectionFactory(options)()
 
-    val currentDate: String = LocalDate.now.toString.replaceAll("-", "")
-    //临时表命名规则：table + _tmp_yyyymmdd (当天日期)
+
+    val sdf: SimpleDateFormat = new SimpleDateFormat("yyyy_MM_dd_HH_mm_ss_SSS")
+    val currentDate: String = sdf.format(new util.Date)
+    //临时表命名规则：table + 日期
     this.tempTableName = tableName + "_tmp_" + currentDate
 
     //临时表如果存在则删除
@@ -274,7 +276,7 @@ object GreenplumUtils extends Logging {
     }
 
     try {
-      logInfo(s"Start copy steam to Greenplum with copy command $sql")
+//      logInfo(s"Start copy steam to Greenplum with copy command $sql")
       val start = System.nanoTime()
       copyThread.start()
       try {
@@ -334,7 +336,7 @@ object GreenplumUtils extends Logging {
       }
     }
     upsertToGpSql = upsertToGpSql + setCols
-    log.info("从临时表upsert至目标表sql:" + upsertToGpSql)
+//    log.info("从临时表upsert至目标表sql:" + upsertToGpSql)
     val ps: PreparedStatement = conn.prepareStatement(upsertToGpSql)
     ps.execute
   }
