@@ -17,6 +17,7 @@
 
 package org.apache.spark.sql.execution.datasources.greenplum
 
+import org.apache.commons.lang3.StringUtils
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.execution.datasources.jdbc.JdbcUtils
@@ -27,15 +28,21 @@ import org.postgresql.copy.CopyManager
 import org.postgresql.core.BaseConnection
 
 import java.io._
+import java.util
 import java.nio.charset.StandardCharsets
-import java.sql.{Connection, Date, Timestamp}
+import java.sql.{Connection, Date, PreparedStatement, SQLException, Timestamp}
+import java.time.LocalDate
 import java.util.UUID
 import java.util.concurrent.{TimeUnit, TimeoutException}
 import scala.concurrent.Promise
 import scala.concurrent.duration.Duration
 import scala.util.Try
+import scala.collection.JavaConverters._
+
 
 object GreenplumUtils extends Logging {
+
+  private var tempTableName = ""
 
   def makeConverter(dataType: DataType): (Row, Int) => String = dataType match {
     case StringType => (r: Row, i: Int) => r.getString(i)
@@ -244,11 +251,23 @@ object GreenplumUtils extends Logging {
     logInfo(s"Finished writing data to local tmp file: ${dataFile.getCanonicalPath}, " +
       s"time taken: ${(endW - startW) / math.pow(10, 9)}s")
     val in = new BufferedInputStream(new FileInputStream(dataFile))
-    val sql = s"COPY $tableName" +
+    val conn = JdbcUtils.createConnectionFactory(options)()
+
+    val currentDate: String = LocalDate.now.toString.replaceAll("-", "")
+    //临时表命名规则：table + _tmp_yyyymmdd (当天日期)
+    this.tempTableName = tableName + "_tmp_" + currentDate
+
+    //临时表如果存在则删除
+    dropTmpTable(conn,tempTableName)
+
+    //创建临时表
+    createTmpTable(conn,tempTableName,tableName)
+
+
+    val sql = s"COPY $tempTableName" +
       s" FROM STDIN WITH NULL AS 'NULL' DELIMITER AS E'${options.delimiter}'"
 
     val promisedCopyNums = Promise[Long]
-    val conn = JdbcUtils.createConnectionFactory(options)()
     val copyManager = new CopyManager(conn.asInstanceOf[BaseConnection])
     val copyThread = new Thread("copy-to-gp-thread") {
       override def run(): Unit = promisedCopyNums.complete(Try(copyManager.copyIn(sql, in)))
@@ -264,6 +283,10 @@ object GreenplumUtils extends Logging {
         val end = System.nanoTime()
         logInfo(s"Copied $nums row(s) to Greenplum," +
           s" time taken: ${(end - start) / math.pow(10, 9)}s")
+
+
+        val primaryKeysList: util.List[String] = getPrimaryKeys(conn, options.parameters.get("dbschema").get, tableName)
+        upsertToGp(conn,tempTableName,tableName,schema.names.toList.asJava,primaryKeysList)
       } catch {
         case _: TimeoutException =>
           throw new TimeoutException(
@@ -276,6 +299,8 @@ object GreenplumUtils extends Logging {
       }
       accumulator.foreach(_.add(1L))
     } finally {
+      //最后删除临时表
+      dropTmpTable(conn,tempTableName)
       copyThread.interrupt()
       copyThread.join()
       in.close()
@@ -288,6 +313,74 @@ object GreenplumUtils extends Logging {
       conn.close()
     } catch {
       case e: Exception => logWarning("Exception occured when closing connection.", e)
+    }
+  }
+
+  @throws[SQLException]
+  def upsertToGp( conn: Connection, tmpTable: String, tableName: String,colNames: util.List[String],keyCloumns: util.List[String]): Unit = {
+    val setCols = new StringBuilder
+    val colNamesWithComma: String = StringUtils.join(colNames, ",")
+    val keyColWithComma: String = StringUtils.join(keyCloumns, ",")
+    var upsertToGpSql: String = String.format("insert into %s (%s)" + "select %s from  %s " + "on conflict(%s) do update set ", tableName, colNamesWithComma, colNamesWithComma, tmpTable, keyColWithComma)
+    var first: Boolean = true
+    import scala.collection.JavaConversions._
+    for (column <- colNames) { //过滤逐渐
+      if (!keyCloumns.contains(column)) {
+        if (!first) setCols.append(",")
+        else first = false
+        setCols.append(column)
+        setCols.append("=excluded.")
+        setCols.append(column)
+      }
+    }
+    upsertToGpSql = upsertToGpSql + setCols
+    log.info("从临时表upsert至目标表sql:" + upsertToGpSql)
+    val ps: PreparedStatement = conn.prepareStatement(upsertToGpSql)
+    ps.execute
+  }
+
+  import java.sql.{ResultSet, SQLException}
+  import java.util
+
+  def getPrimaryKeys(conn: Connection,databaseName: String, table: String): util.List[String] = {
+    val primaryList: util.List[String] = new util.ArrayList[String]
+    var resultSet: ResultSet = null
+    try {
+      resultSet = conn.getMetaData.getPrimaryKeys(databaseName, null, table)
+      while ( {
+        resultSet.next
+      }) {
+        val primary: String = resultSet.getString("COLUMN_NAME")
+        primaryList.add(primary)
+      }
+    } catch {
+      case e: SQLException =>
+        val logStr: String = String.format("gp copy任务执行失败，获取gp主键失败，database:%s,table:%s", databaseName, table)
+        log.error(logStr, e)
+        throw new RuntimeException(logStr)
+    }
+    primaryList
+  }
+
+  def dropTmpTable(conn: Connection, tmpTable: String): Unit = {
+    try {
+      val dropTmpTableSql: String = String.format("drop table if EXISTS  %s", tmpTable)
+      val ps = conn.prepareStatement(dropTmpTableSql)
+      ps.execute
+    } catch {
+      case throwables: SQLException =>
+        throwables.printStackTrace()
+    }
+  }
+
+  def createTmpTable(conn: Connection, tmpTable: String, tableFullName: String): Unit = {
+    try {
+      val dropTmpTableSql: String = String.format("CREATE unlogged TABLE IF NOT EXISTS %s(LIKE %s INCLUDING CONSTRAINTS)", tmpTable, tableFullName)
+      val ps: PreparedStatement = conn.prepareStatement(dropTmpTableSql)
+      ps.execute
+    } catch {
+      case throwables: SQLException =>
+        throwables.printStackTrace()
     }
   }
 
