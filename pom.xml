@@ -5,8 +5,8 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>org.apache.spark</groupId>
-    <artifactId>spark-greenplum</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <artifactId>spark-greenplum-huoshi</artifactId>
+    <version>1.0</version>
     <packaging>jar</packaging>
 
     <developers>
