@@ -17,11 +17,11 @@
 
 package org.apache.spark.sql.execution.datasources.greenplum
 
-import org.apache.spark.sql.{AnalysisException, DataFrame, SaveMode, SQLContext}
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.execution.datasources.jdbc._
 import org.apache.spark.sql.sources.{BaseRelation, CreatableRelationProvider, DataSourceRegister, RelationProvider}
 import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.{AnalysisException, DataFrame, SQLContext, SaveMode}
 
 class DefaultSource
   extends RelationProvider with CreatableRelationProvider with DataSourceRegister {
@@ -30,32 +30,55 @@ class DefaultSource
 
   override def shortName(): String = "greenplum"
 
-  override def createRelation(
-      sqlContext: SQLContext,
-      parameters: Map[String, String]): BaseRelation = {
-    import JDBCOptions._
+//  override def createRelation(
+//      sqlContext: SQLContext,
+//      parameters: Map[String, String]): BaseRelation = {
+//    import JDBCOptions._
+//
+//    val options = GreenplumOptions(CaseInsensitiveMap(parameters))
+//    val partitionColumn = options.partitionColumn
+//    val lowerBound = options.lowerBound
+//    val upperBound = options.upperBound
+//    val numPartitions = options.numPartitions
+//
+//    val partitionInfo: JDBCPartitioningInfo = if (partitionColumn.isEmpty) {
+//      assert(lowerBound.isEmpty && upperBound.isEmpty, "When 'partitionColumn' is not specified, " +
+//        s"'$JDBC_LOWER_BOUND' and '$JDBC_UPPER_BOUND' are expected to be empty")
+//      null
+//    } else {
+//      assert(lowerBound.nonEmpty && upperBound.nonEmpty && numPartitions.nonEmpty,
+//        s"When 'partitionColumn' is specified, '$JDBC_LOWER_BOUND', '$JDBC_UPPER_BOUND', and " +
+//          s"'$JDBC_NUM_PARTITIONS' are also required")
+//      JDBCPartitioningInfo(
+//        partitionColumn.get, lowerBound.get, upperBound.get, numPartitions.get)
+//    }
+//    val parts = JDBCRelation.columnPartition(partitionInfo)
+//    GreenplumRelation(parts, options)(sqlContext.sparkSession)
+////    GreenplumRelation(null, options)(sqlContext.sparkSession)
+//  }
 
+//  override def createRelation(
+//                               sqlContext: SQLContext,
+//                               parameters: Map[String, String]): BaseRelation = {
+//    val jdbcOptions = new JDBCOptions(parameters)
+//    val resolver = sqlContext.conf.resolver
+//    val timeZoneId = sqlContext.conf.sessionLocalTimeZone
+//    val schema = JDBCRelation.getSchema(resolver, jdbcOptions)
+//    val parts = JDBCRelation.columnPartition(schema, resolver, timeZoneId, jdbcOptions)
+//    GreenplumRelation(schema, parts, jdbcOptions)(sqlContext.sparkSession)
+//  }
+
+    override def createRelation(
+        sqlContext: SQLContext,
+        parameters: Map[String, String]): BaseRelation = {
     val options = GreenplumOptions(CaseInsensitiveMap(parameters))
-    val partitionColumn = options.partitionColumn
-    val lowerBound = options.lowerBound
-    val upperBound = options.upperBound
-    val numPartitions = options.numPartitions
-
-    val partitionInfo = if (partitionColumn.isEmpty) {
-      assert(lowerBound.isEmpty && upperBound.isEmpty, "When 'partitionColumn' is not specified, " +
-        s"'$JDBC_LOWER_BOUND' and '$JDBC_UPPER_BOUND' are expected to be empty")
-      null
-    } else {
-      assert(lowerBound.nonEmpty && upperBound.nonEmpty && numPartitions.nonEmpty,
-        s"When 'partitionColumn' is specified, '$JDBC_LOWER_BOUND', '$JDBC_UPPER_BOUND', and " +
-          s"'$JDBC_NUM_PARTITIONS' are also required")
-      JDBCPartitioningInfo(
-        partitionColumn.get, lowerBound.get, upperBound.get, numPartitions.get)
+    val jdbcOptions = new JDBCOptions(parameters)
+    val resolver = sqlContext.conf.resolver
+    val timeZoneId = sqlContext.conf.sessionLocalTimeZone
+    val schema = JDBCRelation.getSchema(resolver, jdbcOptions)
+    val parts = JDBCRelation.columnPartition(schema, resolver, timeZoneId, jdbcOptions)
+      GreenplumRelation(parts, options)(sqlContext.sparkSession)
     }
-    val parts = JDBCRelation.columnPartition(partitionInfo)
-    GreenplumRelation(parts, options)(sqlContext.sparkSession)
-  }
-
   override def createRelation(
       sqlContext: SQLContext,
       mode: SaveMode,
@@ -67,7 +90,7 @@ class DefaultSource
     val m = options.maxConnections
     val conn = JdbcUtils.createConnectionFactory(options)()
     try {
-      if (tableExists(conn, options.table)) {
+      if (tableExists(conn, options.tableOrQuery)) {
         val tableSchema = JdbcUtils.getSchemaOption(conn, options)
         checkSchema(tableSchema, df.schema, isCaseSensitive)
         val orderedDf = reorderDataFrameColumns(df, tableSchema)
@@ -76,7 +99,8 @@ class DefaultSource
           case SaveMode.Overwrite
             if options.isTruncate &&
               JdbcUtils.isCascadingTruncateTable(options.url).contains(false) =>
-            JdbcUtils.truncateTable(conn, options)
+//            JdbcUtils.truncateTable(conn, options)
+            JdbcUtils.truncateTable(conn, new JdbcOptionsInWrite(CaseInsensitiveMap(parameters)))
             nonTransactionalCopy(
               if (options.transactionOn) orderedDf.coalesce(1) else orderedDf.coalesce(m),
               orderedDf.schema, options)
@@ -91,7 +115,7 @@ class DefaultSource
               },
               orderedDf.schema, options)
           case SaveMode.ErrorIfExists =>
-            throw new AnalysisException(s"Table or view '${options.table}' already exists. $mode")
+            throw new AnalysisException(s"Table or view '${options.tableOrQuery}' already exists. $mode")
           case SaveMode.Ignore => // do nothing
         }
       } else {

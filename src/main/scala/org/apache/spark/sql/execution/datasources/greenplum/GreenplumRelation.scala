@@ -20,7 +20,7 @@ package org.apache.spark.sql.execution.datasources.greenplum
 import org.apache.spark.Partition
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
-import org.apache.spark.sql.execution.datasources.jdbc.{JDBCRDD, JdbcUtils}
+import org.apache.spark.sql.execution.datasources.jdbc.{JDBCRDD, JdbcOptionsInWrite, JdbcUtils}
 import org.apache.spark.sql.jdbc.JdbcDialects
 import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation, PrunedFilteredScan}
 import org.apache.spark.sql.types._
@@ -67,7 +67,7 @@ private[sql] case class GreenplumRelation(
       if (overwrite) {
         if (options.isTruncate &&
           JdbcUtils.isCascadingTruncateTable(options.url).contains(false)) {
-          JdbcUtils.truncateTable(conn, options)
+          JdbcUtils.truncateTable(conn, new JdbcOptionsInWrite(options.params))
           nonTransactionalCopy(
             if (options.transactionOn) data.coalesce(1) else data.coalesce(maxConns),
             schema, options)
@@ -91,6 +91,6 @@ private[sql] case class GreenplumRelation(
   override def toString: String = {
     val partitioningInfo = if (parts.nonEmpty) s" [numPartitions=${parts.length}]" else ""
     // credentials should not be included in the plan output, table information is sufficient.
-    s"GreenplumRelation(${options.table})" + partitioningInfo
+    s"GreenplumRelation(${options.tableOrQuery})" + partitioningInfo
   }
 }

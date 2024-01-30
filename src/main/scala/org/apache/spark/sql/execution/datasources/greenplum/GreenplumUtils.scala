@@ -17,25 +17,23 @@
 
 package org.apache.spark.sql.execution.datasources.greenplum
 
+import org.apache.spark.SparkEnv
+import org.apache.spark.internal.Logging
+import org.apache.spark.sql.execution.datasources.jdbc.JdbcUtils
+import org.apache.spark.sql.types._
+import org.apache.spark.sql.{DataFrame, Row}
+import org.apache.spark.util.{LongAccumulator, ThreadUtils, Utils}
+import org.postgresql.copy.CopyManager
+import org.postgresql.core.BaseConnection
+
 import java.io._
 import java.nio.charset.StandardCharsets
 import java.sql.{Connection, Date, Timestamp}
 import java.util.UUID
-import java.util.concurrent.{TimeoutException, TimeUnit}
-
+import java.util.concurrent.{TimeUnit, TimeoutException}
 import scala.concurrent.Promise
 import scala.concurrent.duration.Duration
 import scala.util.Try
-
-import org.postgresql.copy.CopyManager
-import org.postgresql.core.BaseConnection
-
-import org.apache.spark.SparkEnv
-import org.apache.spark.internal.Logging
-import org.apache.spark.sql.{DataFrame, Row}
-import org.apache.spark.sql.execution.datasources.jdbc.JdbcUtils
-import org.apache.spark.sql.types._
-import org.apache.spark.util.{LongAccumulator, ThreadUtils, Utils}
 
 object GreenplumUtils extends Logging {
 
@@ -105,14 +103,15 @@ object GreenplumUtils extends Logging {
       schema: StructType,
       options: GreenplumOptions): Unit = {
     val randomString = UUID.randomUUID().toString.filterNot(_ == '-')
-    val canonicalTblName = TableNameExtractor.extract(options.table)
+    val canonicalTblName = TableNameExtractor.extract(options.tableOrQuery)
     val schemaPrefix = canonicalTblName.schema.map(_ + ".").getOrElse("")
     val rawTblName = canonicalTblName.rawName
     val suffix = "sparkGpTmp"
     val quote = "\""
 
     val tempTable = s"$schemaPrefix$quote${rawTblName}_${randomString}_$suffix$quote"
-    val strSchema = JdbcUtils.schemaString(df, options.url, options.createTableColumnTypes)
+//    val strSchema = JdbcUtils.schemaString(df, options.url, options.createTableColumnTypes)
+    val strSchema = JdbcUtils.schemaString(df.schema,false, options.url, options.createTableColumnTypes)
     val createTempTbl = s"CREATE TABLE $tempTable ($strSchema) ${options.createTableOptions}"
 
     // Stage 1. create a _sparkGpTmp table as a shadow of the target Greenplum table. If this stage
@@ -127,8 +126,10 @@ object GreenplumUtils extends Logging {
     // Stage 2. Spark executors run copy task to Greenplum, and will increase the accumulator if
     // each task successfully copied.
     val accumulator = df.sparkSession.sparkContext.longAccumulator("copySuccess")
-    df.foreachPartition { rows =>
+//    df.foreachPartition { rows =>
+    df.foreachPartition { rows: Iterator[org.apache.spark.sql.Row] =>
       copyPartition(rows, options, schema, tempTable, Some(accumulator))
+//      copyPartition(rows.asInstanceOf[Iterator[Row]], options, schema, tempTable, Some(accumulator))
     }
 
     // Stage 3. if the accumulator value is not equal to the [[Dataframe]] instance's partition
@@ -139,11 +140,11 @@ object GreenplumUtils extends Logging {
     val conn2 = JdbcUtils.createConnectionFactory(options)()
     try {
       if (accumulator.value == partNum) {
-        if (tableExists(conn2, options.table)) {
-          JdbcUtils.dropTable(conn2, options.table)
+        if (tableExists(conn2, options.tableOrQuery)) {
+          JdbcUtils.dropTable(conn2, options.tableOrQuery,options)
         }
 
-        val newTableName = s"${options.table}".split("\\.").last
+        val newTableName = s"${options.tableOrQuery}".split("\\.").last
         val renameTempTbl = s"ALTER TABLE $tempTable RENAME TO $newTableName"
         executeStatement(conn2, renameTempTbl)
       } else {
@@ -156,7 +157,7 @@ object GreenplumUtils extends Logging {
       }
     } finally {
       if (tableExists(conn2, tempTable)) {
-        retryingDropTableSilent(conn2, tempTable)
+        retryingDropTableSilent(conn2, tempTable,options)
       }
       closeConnSilent(conn2)
     }
@@ -165,14 +166,14 @@ object GreenplumUtils extends Logging {
   /**
    * Drop the table and retry automatically when exception occurred.
    */
-  def retryingDropTableSilent(conn: Connection, table: String): Unit = {
+  def retryingDropTableSilent(conn: Connection, table: String,options: GreenplumOptions): Unit = {
     val dropTmpTableMaxRetry = 3
     var dropTempTableRetryCount = 0
     var dropSuccess = false
 
     while (!dropSuccess && dropTempTableRetryCount < dropTmpTableMaxRetry) {
       try {
-        JdbcUtils.dropTable(conn, table)
+        JdbcUtils.dropTable(conn, table,options)
         dropSuccess = true
       } catch {
         case e: Exception =>
@@ -205,8 +206,9 @@ object GreenplumUtils extends Logging {
       df: DataFrame,
       schema: StructType,
       options: GreenplumOptions): Unit = {
-    df.foreachPartition { rows =>
-      copyPartition(rows, options, schema, options.table)
+//    df.foreachPartition { rows =>
+    df.foreachPartition { rows: Iterator[org.apache.spark.sql.Row] =>
+      copyPartition(rows, options, schema, options.tableOrQuery)
     }
   }
 

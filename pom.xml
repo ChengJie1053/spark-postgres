@@ -31,10 +31,10 @@
 
     <properties>
         <postgresql.ver>42.3.8</postgresql.ver>
-        <scala.binary.ver>2.11</scala.binary.ver>
-        <scala.ver>2.11.8</scala.ver>
+        <scala.binary.ver>2.12</scala.binary.ver>
+        <scala.ver>2.12.10</scala.ver>
         <scalatest.ver>3.0.3</scalatest.ver>
-        <spark.ver>2.3.3</spark.ver>
+        <spark.ver>3.1.2</spark.ver>
     </properties>
 
     <dependencies>
