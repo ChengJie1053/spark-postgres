@@ -274,8 +274,13 @@ object GreenplumUtils extends Logging {
     createTmpTable(conn,tempTableName,tableName)
 
 
-    val sql = s"COPY $tempTableName" +
+    var sql = s"COPY $tempTableName" +
       s" FROM STDIN WITH NULL AS 'NULL' DELIMITER AS E'${options.delimiter}'"
+
+    if (StringUtils.isNotBlank(options.gpFields)) {
+      sql = s"COPY $tempTableName" +
+        s" (${options.gpFields}) FROM STDIN WITH NULL AS 'NULL' DELIMITER AS E'${options.delimiter}'"
+    }
 
     val promisedCopyNums = Promise[Long]
     val copyManager = new CopyManager(conn.asInstanceOf[BaseConnection])
@@ -417,10 +422,15 @@ object GreenplumUtils extends Logging {
     }
   }
 
-  def reorderDataFrameColumns(df: DataFrame, tableSchema: Option[StructType]): DataFrame = {
-    tableSchema.map { schema =>
-      df.selectExpr(schema.map(filed => filed.name): _*)
-    }.getOrElse(df)
+  def reorderDataFrameColumns(df: DataFrame, tableSchema: Option[StructType],gpFields: String): DataFrame = {
+    if (StringUtils.isNotBlank(gpFields)){
+      val gpFieldsSchemaName = gpFields.split(",")
+      df.selectExpr(gpFieldsSchemaName: _*)
+    }else {
+      tableSchema.map { schema =>
+        df.selectExpr(schema.map(filed => filed.name): _*)
+      }.getOrElse(df)
+    }
   }
 
   /**

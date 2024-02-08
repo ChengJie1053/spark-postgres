@@ -93,7 +93,7 @@ class DefaultSource
       if (tableExists(conn, options.tableOrQuery)) {
         val tableSchema = JdbcUtils.getSchemaOption(conn, options)
         checkSchema(tableSchema, df.schema, isCaseSensitive)
-        val orderedDf = reorderDataFrameColumns(df, tableSchema)
+        val orderedDf = reorderDataFrameColumns(df, tableSchema,options.gpFields)
         // In fact, the mode here is Overwrite constantly, we add other modes just for compatible.
         mode match {
           case SaveMode.Overwrite

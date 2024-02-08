@@ -28,6 +28,8 @@ case class GreenplumOptions(@transient params: CaseInsensitiveMap[String])
   extends JDBCOptions(params.updated("driver", "org.postgresql.Driver")) {
 
   val delimiter: String = params.getOrElse("delimiter", ",")
+
+  val gpFields: String = params.getOrElse("gpFields", "")
   assert(delimiter.length == 1, "The delimiter should be a single character.")
 
   /**
