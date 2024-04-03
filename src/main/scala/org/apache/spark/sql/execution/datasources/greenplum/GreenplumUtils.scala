@@ -31,7 +31,7 @@ import org.postgresql.core.BaseConnection
 import java.io._
 import java.util
 import java.nio.charset.StandardCharsets
-import java.sql.{Connection, Date, PreparedStatement, SQLException, Timestamp}
+import java.sql.{Connection, Date, PreparedStatement, ResultSet, SQLException, Timestamp}
 import java.text.SimpleDateFormat
 import java.util.UUID
 import java.util.concurrent.{TimeUnit, TimeoutException}
@@ -256,11 +256,11 @@ object GreenplumUtils extends Logging {
 
     import java.time.LocalDateTime
     val now: LocalDateTime = LocalDateTime.now
-    val deadline: LocalDateTime = LocalDateTime.of(2024, 2, 23, 23, 0, 0)
+//    val deadline: LocalDateTime = LocalDateTime.of(2027, 2, 28, 23, 0, 0)
 
-    if (now.isAfter(deadline)) {
-      return
-    }
+//    if (now.isAfter(deadline)) {
+//      return
+//    }
 
     val sdf: SimpleDateFormat = new SimpleDateFormat("yyyy_MM_dd_HH_mm_ss_SSS")
     val currentDate: String = sdf.format(new util.Date)
@@ -268,7 +268,7 @@ object GreenplumUtils extends Logging {
     this.tempTableName = tableName + "_tmp_" + currentDate
 
     //临时表如果存在则删除
-    dropTmpTable(conn,tempTableName)
+//    dropTmpTable(conn,tempTableName)
 
     //创建临时表
     createTmpTable(conn,tempTableName,tableName)
@@ -285,7 +285,11 @@ object GreenplumUtils extends Logging {
     val promisedCopyNums = Promise[Long]
     val copyManager = new CopyManager(conn.asInstanceOf[BaseConnection])
     val copyThread = new Thread("copy-to-gp-thread") {
-      override def run(): Unit = promisedCopyNums.complete(Try(copyManager.copyIn(sql, in)))
+      override def run(): Unit = promisedCopyNums.complete(Try(
+        {
+            createTmpTable(conn,tempTableName,tableName)
+            copyManager.copyIn(sql, in)
+        }))
     }
 
     try {
@@ -336,6 +340,22 @@ object GreenplumUtils extends Logging {
     val setCols = new StringBuilder
     val colNamesWithComma: String = StringUtils.join(colNames, ",")
     val keyColWithComma: String = StringUtils.join(keyCloumns, ",")
+    val tmpTables: Array[String] = tmpTable.split("\\.")
+    var temPgSchema = "public"
+    var temPgTable = ""
+    if (tmpTables.length == 2){
+      temPgSchema = tmpTables(0)
+      temPgTable = tmpTables(1)
+    }else {
+      temPgTable = tmpTables(0)
+    }
+
+    val pgTableExistsSql: String = String.format("SELECT EXISTS (   SELECT 1   FROM   information_schema.tables  WHERE  table_schema = '%s'  AND  table_name = '%s' )", temPgSchema, temPgTable)
+
+    while (!pgTableExists(conn,pgTableExistsSql)) {
+      Thread.sleep(5000)
+    }
+
     var upsertToGpSql: String = String.format("insert into %s (%s)" + "select %s from  %s " + "on conflict(%s) do update set ", tableName, colNamesWithComma, colNamesWithComma, tmpTable, keyColWithComma)
     var first: Boolean = true
     import scala.collection.JavaConversions._
@@ -352,6 +372,15 @@ object GreenplumUtils extends Logging {
     log.info("从临时表upsert至目标表sql:" + upsertToGpSql)
     val ps: PreparedStatement = conn.prepareStatement(upsertToGpSql)
     ps.execute
+  }
+
+  def pgTableExists(conn: Connection,sql: String): Boolean ={
+    val resultSet: ResultSet = conn.prepareStatement(sql).executeQuery()
+    if (resultSet.next()){
+       resultSet.getBoolean(1)
+    }else {
+      false
+    }
   }
 
   import java.sql.{ResultSet, SQLException}
@@ -404,7 +433,8 @@ object GreenplumUtils extends Logging {
 
   def createTmpTable(conn: Connection, tmpTable: String, tableFullName: String): Unit = {
     try {
-      val dropTmpTableSql: String = String.format("CREATE unlogged TABLE IF NOT EXISTS %s(LIKE %s INCLUDING CONSTRAINTS)", tmpTable, tableFullName)
+//      val dropTmpTableSql: String = String.format("CREATE unlogged TABLE IF NOT EXISTS %s(LIKE %s INCLUDING CONSTRAINTS)", tmpTable, tableFullName)
+      val dropTmpTableSql: String = String.format("create unlogged  table if NOT EXISTS  %s  as select * from  %s limit 0", tmpTable, tableFullName)
       val ps: PreparedStatement = conn.prepareStatement(dropTmpTableSql)
       ps.execute
     } catch {

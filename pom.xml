@@ -95,6 +95,7 @@
         </dependency>
     </dependencies>
     <build>
+<!--        <finalName>test</finalName>-->
         <outputDirectory>target/scala-${scala.binary.ver}/classes</outputDirectory>
         <testOutputDirectory>target/scala-${scala.binary.ver}/test-classes</testOutputDirectory>
         <resources>
