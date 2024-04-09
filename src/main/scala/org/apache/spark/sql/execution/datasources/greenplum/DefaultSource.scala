@@ -122,10 +122,6 @@ class DefaultSource
         transactionalCopy(df.coalesce(m), df.schema, options)
       }
     } finally {
-      if(collectionAcc != null){
-        println(collectionAcc)
-        collectionAcc.value.forEach(x => dropTmpTable(conn,x))
-      }
       closeConnSilent(conn)
     }
     createRelation(sqlContext, parameters)

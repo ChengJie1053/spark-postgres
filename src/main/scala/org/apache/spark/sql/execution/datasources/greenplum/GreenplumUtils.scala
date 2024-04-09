@@ -45,8 +45,6 @@ object GreenplumUtils extends Logging {
 
   private var tempTableName = ""
 
-  var collectionAcc: CollectionAccumulator[String] = null
-
   def makeConverter(dataType: DataType): (Row, Int) => String = dataType match {
     case StringType => (r: Row, i: Int) => r.getString(i)
     case BooleanType => (r: Row, i: Int) => r.getBoolean(i).toString
@@ -217,11 +215,29 @@ object GreenplumUtils extends Logging {
       schema: StructType,
       options: GreenplumOptions): Unit = {
 //    df.foreachPartition { rows =>
-    if (collectionAcc == null){
-      collectionAcc = df.sparkSession.sparkContext.collectionAccumulator[String]("collectionStringAcc")
-    }
+     val collectionAcc: CollectionAccumulator[String] = df.sparkSession.sparkContext.collectionAccumulator[String]("collectionStringAcc")
+    val accumulator = df.sparkSession.sparkContext.longAccumulator("copySuccess")
+
     df.foreachPartition { rows: Iterator[org.apache.spark.sql.Row] =>
-      copyPartition(rows, options, schema, options.tableOrQuery)
+      copyPartition(rows, options, schema, options.tableOrQuery,Some(accumulator),Some(collectionAcc))
+    }
+
+    val partNum = df.rdd.getNumPartitions
+    val conn2 = JdbcUtils.createConnectionFactory(options)()
+    println(collectionAcc)
+    try {
+      if (accumulator.value == partNum) {
+        collectionAcc.value.forEach(x => dropTmpTable(conn2,x))
+      } else {
+        throw new PartitionCopyFailureException(
+          s"""
+             | Job aborted for that there are some partitions failed to copy data to greenPlum:
+             | Total partitions is: $partNum and successful partitions is: ${accumulator.value}.
+             | You can retry again.
+            """.stripMargin)
+      }
+    } finally {
+      closeConnSilent(conn2)
     }
   }
 
@@ -239,7 +255,8 @@ object GreenplumUtils extends Logging {
       options: GreenplumOptions,
       schema: StructType,
       tableName: String,
-      accumulator: Option[LongAccumulator] = None): Unit = {
+      accumulator: Option[LongAccumulator] = None,
+      collectionAcc: Option[CollectionAccumulator[String]] = None): Unit = {
     val valueConverters: Array[(Row, Int) => String] =
       schema.map(s => makeConverter(s.dataType)).toArray
     val tmpDir = Utils.createTempDir(Utils.getLocalDir(SparkEnv.get.conf), "greenplum")
@@ -271,10 +288,7 @@ object GreenplumUtils extends Logging {
     val currentDate: String = sdf.format(new util.Date)
     //临时表命名规则：table + 日期
     this.tempTableName = tableName + "_tmp_" + currentDate
-    if (collectionAcc != null){
-      collectionAcc.add(this.tempTableName)
-    }
-//    collectionAcc.foreach(_.add(this.tempTableName))
+    collectionAcc.foreach(_.add(this.tempTableName))
 
     //临时表如果存在则删除
 //    dropTmpTable(conn,tempTableName)
