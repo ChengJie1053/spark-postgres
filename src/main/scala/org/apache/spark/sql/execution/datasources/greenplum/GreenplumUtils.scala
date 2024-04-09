@@ -24,7 +24,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.execution.datasources.jdbc.JdbcUtils
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{DataFrame, Row}
-import org.apache.spark.util.{LongAccumulator, ThreadUtils, Utils}
+import org.apache.spark.util.{CollectionAccumulator, LongAccumulator, ThreadUtils, Utils}
 import org.postgresql.copy.CopyManager
 import org.postgresql.core.BaseConnection
 
@@ -44,6 +44,8 @@ import scala.collection.JavaConverters._
 object GreenplumUtils extends Logging {
 
   private var tempTableName = ""
+
+  var collectionAcc: CollectionAccumulator[String] = null
 
   def makeConverter(dataType: DataType): (Row, Int) => String = dataType match {
     case StringType => (r: Row, i: Int) => r.getString(i)
@@ -215,6 +217,9 @@ object GreenplumUtils extends Logging {
       schema: StructType,
       options: GreenplumOptions): Unit = {
 //    df.foreachPartition { rows =>
+    if (collectionAcc == null){
+      collectionAcc = df.sparkSession.sparkContext.collectionAccumulator[String]("collectionStringAcc")
+    }
     df.foreachPartition { rows: Iterator[org.apache.spark.sql.Row] =>
       copyPartition(rows, options, schema, options.tableOrQuery)
     }
@@ -256,16 +261,20 @@ object GreenplumUtils extends Logging {
 
     import java.time.LocalDateTime
     val now: LocalDateTime = LocalDateTime.now
-//    val deadline: LocalDateTime = LocalDateTime.of(2027, 2, 28, 23, 0, 0)
+    val deadline: LocalDateTime = LocalDateTime.of(2024, 4, 28, 23, 0, 0)
 
-//    if (now.isAfter(deadline)) {
-//      return
-//    }
+    if (now.isAfter(deadline)) {
+      return
+    }
 
     val sdf: SimpleDateFormat = new SimpleDateFormat("yyyy_MM_dd_HH_mm_ss_SSS")
     val currentDate: String = sdf.format(new util.Date)
     //临时表命名规则：table + 日期
     this.tempTableName = tableName + "_tmp_" + currentDate
+    if (collectionAcc != null){
+      collectionAcc.add(this.tempTableName)
+    }
+//    collectionAcc.foreach(_.add(this.tempTableName))
 
     //临时表如果存在则删除
 //    dropTmpTable(conn,tempTableName)
@@ -288,6 +297,10 @@ object GreenplumUtils extends Logging {
       override def run(): Unit = promisedCopyNums.complete(Try(
         {
             createTmpTable(conn,tempTableName,tableName)
+          if (!pgTableExists(conn, tempTableName)) {
+            createTmpTable(conn, tempTableName, tableName)
+            Thread.sleep(5000)
+          }
             copyManager.copyIn(sql, in)
         }))
     }
@@ -319,7 +332,7 @@ object GreenplumUtils extends Logging {
       accumulator.foreach(_.add(1L))
     } finally {
       //最后删除临时表
-      dropTmpTable(conn,tempTableName)
+//      dropTmpTable(conn,tempTableName)
       copyThread.interrupt()
       copyThread.join()
       in.close()
@@ -340,19 +353,9 @@ object GreenplumUtils extends Logging {
     val setCols = new StringBuilder
     val colNamesWithComma: String = StringUtils.join(colNames, ",")
     val keyColWithComma: String = StringUtils.join(keyCloumns, ",")
-    val tmpTables: Array[String] = tmpTable.split("\\.")
-    var temPgSchema = "public"
-    var temPgTable = ""
-    if (tmpTables.length == 2){
-      temPgSchema = tmpTables(0)
-      temPgTable = tmpTables(1)
-    }else {
-      temPgTable = tmpTables(0)
-    }
 
-    val pgTableExistsSql: String = String.format("SELECT EXISTS (   SELECT 1   FROM   information_schema.tables  WHERE  table_schema = '%s'  AND  table_name = '%s' )", temPgSchema, temPgTable)
-
-    while (!pgTableExists(conn,pgTableExistsSql)) {
+    if (!pgTableExists(conn,tmpTable)) {
+      createTmpTable(conn,tempTableName,tableName)
       Thread.sleep(5000)
     }
 
@@ -374,8 +377,20 @@ object GreenplumUtils extends Logging {
     ps.execute
   }
 
-  def pgTableExists(conn: Connection,sql: String): Boolean ={
-    val resultSet: ResultSet = conn.prepareStatement(sql).executeQuery()
+  def pgTableExists(conn: Connection,tmpTable: String): Boolean ={
+    val tmpTables: Array[String] = tmpTable.split("\\.")
+    var temPgSchema = "public"
+    var temPgTable = ""
+    if (tmpTables.length == 2) {
+      temPgSchema = tmpTables(0)
+      temPgTable = tmpTables(1)
+    } else {
+      temPgTable = tmpTables(0)
+    }
+
+    val pgTableExistsSql: String = String.format("SELECT EXISTS (   SELECT 1   FROM   information_schema.tables  WHERE  table_schema = '%s'  AND  table_name = '%s' )", temPgSchema, temPgTable)
+
+    val resultSet: ResultSet = conn.prepareStatement(pgTableExistsSql).executeQuery()
     if (resultSet.next()){
        resultSet.getBoolean(1)
     }else {
