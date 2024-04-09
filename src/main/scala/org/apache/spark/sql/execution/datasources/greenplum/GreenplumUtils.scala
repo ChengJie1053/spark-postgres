@@ -224,7 +224,7 @@ object GreenplumUtils extends Logging {
 
     val partNum = df.rdd.getNumPartitions
     val conn2 = JdbcUtils.createConnectionFactory(options)()
-    println(collectionAcc)
+//    println(collectionAcc)
     try {
       if (accumulator.value == partNum) {
         collectionAcc.value.forEach(x => dropTmpTable(conn2,x))
