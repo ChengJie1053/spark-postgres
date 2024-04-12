@@ -276,13 +276,6 @@ object GreenplumUtils extends Logging {
     val in = new BufferedInputStream(new FileInputStream(dataFile))
     val conn = JdbcUtils.createConnectionFactory(options)()
 
-    import java.time.LocalDateTime
-    val now: LocalDateTime = LocalDateTime.now
-    val deadline: LocalDateTime = LocalDateTime.of(2024, 4, 28, 23, 0, 0)
-
-    if (now.isAfter(deadline)) {
-      return
-    }
 
     val sdf: SimpleDateFormat = new SimpleDateFormat("yyyy_MM_dd_HH_mm_ss_SSS")
     val currentDate: String = sdf.format(new util.Date)
